@@ -1,0 +1,150 @@
+// ┌─────────────────────────────────────────────────────────────┐
+// │       Multiple PMSA003I Sensors via I2C Multiplexer         │
+// │     Reads and logs PM data from 8 sensors every 10 sec       │
+// └─────────────────────────────────────────────────────────────┘
+
+// ──────────────────── Include Libraries ───────────────────────
+#include "Adafruit_PM25AQI.h"
+#include <Wire.h>
+
+// ─────────────── Configuration and Constants ──────────────────
+#define TCAADDR 0x70                         // I2C address of TCA9548A multiplexer
+#define readingInterval 10000                // Milliseconds between sensor reads
+
+// ──────────────── Timing Variables ────────────────────────────
+unsigned long readingStartTime = 0;          // Timestamp when readings begin (after warmup)
+bool startedReading = false;                 // Tracks if reading has started yet
+
+// ──────────────── Sensor Objects ──────────────────────────────
+Adafruit_PM25AQI aqi0;
+Adafruit_PM25AQI aqi1;
+Adafruit_PM25AQI aqi2;
+Adafruit_PM25AQI aqi3;
+Adafruit_PM25AQI aqi4;
+Adafruit_PM25AQI aqi5;
+Adafruit_PM25AQI aqi6;
+Adafruit_PM25AQI aqi7;
+
+// ──────────────── Sensor Array for Looping ────────────────────
+Adafruit_PM25AQI* sensors[] = {
+  &aqi0, &aqi1, &aqi2, &aqi3, &aqi4, &aqi5, &aqi6, &aqi7
+};
+const uint8_t sensorCount = sizeof(sensors) / sizeof(sensors[0]);
+
+// ───────────────────── Setup ──────────────────────────────────
+void setup() {
+  Wire.begin();                        // Initialize I2C
+
+  Serial.begin(115200);               // Begin Serial output
+  while (!Serial) delay(10);          // Wait for Serial to be ready
+  Serial.println("Adafruit PMSA003I Air Quality Sensor");
+
+  delay(1000);                        // Small delay for power stability
+
+  // Initialize all connected sensors through the multiplexer
+  for (uint8_t i = 0; i < sensorCount; i++) {
+    initSensor(i);
+  }
+
+  // Print CSV-style header row for all sensors
+  Serial.print("Time (sec)");
+  for (uint8_t i = 0; i < sensorCount; i++) {
+    Serial.print(", PM1_"); Serial.print(i);
+    Serial.print(", PM2.5_"); Serial.print(i);
+    Serial.print(", PM10_"); Serial.print(i);
+    Serial.print(", 0.3um_"); Serial.print(i);
+    Serial.print(", 0.5um_"); Serial.print(i);
+    Serial.print(", 1.0um_"); Serial.print(i);
+    Serial.print(", 2.5um_"); Serial.print(i);
+    Serial.print(", 5.0um_"); Serial.print(i);
+    Serial.print(", 10um_"); Serial.print(i);
+  }
+  Serial.println();
+
+  delay(30000); // PMS sensors need 30 seconds to warm up before valid readings
+}
+
+// ───────────────────── Main Loop ──────────────────────────────
+void loop() {
+  static unsigned long lastReading = 0;     // Track last reading time
+  unsigned long now = millis();             // Current time
+
+  // Time to read from sensors?
+  if ((now - lastReading) >= readingInterval) {
+    lastReading = now;
+
+    // Start elapsed time from *first* reading (after warm-up)
+    if (!startedReading) {
+      readingStartTime = now;
+      startedReading = true;
+    }
+
+    // Calculate time since readings began
+    float elapsedTime = (now - readingStartTime) / 1000.0;
+
+    // Read and print data from each sensor
+    for (uint8_t i = 0; i < sensorCount; i++) {
+      readSensor(i, elapsedTime);
+    }
+  }
+}
+
+// ───────────────────── Sensor Initialization ─────────────────
+void initSensor(uint8_t index) {
+  tcaselect(index);                     // Switch I2C channel on TCA9548A
+  delay(100);                           // Let sensor settle
+
+  // Attempt to begin I2C connection to sensor
+  if (!sensors[index]->begin_I2C()) {
+    Serial.print("Could not find PM 2.5 sensor at channel ");
+    Serial.println(index);
+    while (1) delay(10);               // Halt execution if sensor fails
+  } else {
+    Serial.print("PM25 - "); Serial.print(index); Serial.println(" - found!");
+  }
+}
+
+// ───────────────────── Read Sensor Data ───────────────────────
+void readSensor(uint8_t index, float elapsedTime) {
+  tcaselect(index);                    // Select correct sensor channel
+  PM25_AQI_Data data;
+
+  // Read from sensor, skip if fails
+  if (!sensors[index]->read(&data)) {
+    Serial.print("Sensor "); Serial.print(index); Serial.println(" read failed.");
+    return;
+  }
+
+  // Only print elapsed time for first sensor in row
+  if (index == 0) {
+    Serial.print(elapsedTime);
+    Serial.print(", ");
+  }
+
+  // Output standard particulate readings and size bins
+  Serial.print(data.pm10_standard); Serial.print(", ");
+  Serial.print(data.pm25_standard); Serial.print(", ");
+  Serial.print(data.pm100_standard); Serial.print(", ");
+  Serial.print(data.particles_03um); Serial.print(", ");
+  Serial.print(data.particles_05um); Serial.print(", ");
+  Serial.print(data.particles_10um); Serial.print(", ");
+  Serial.print(data.particles_25um); Serial.print(", ");
+  Serial.print(data.particles_50um); Serial.print(", ");
+  Serial.print(data.particles_100um);
+
+  // End the line if this is the last sensor, else keep printing commas
+  if (index < sensorCount - 1) {
+    Serial.print(", ");
+  } else {
+    Serial.println();
+  }
+}
+
+// ───────────────────── TCA9548A Multiplexer Select ────────────
+void tcaselect(uint8_t i) {
+  if (i > 7) return;                   // TCA has only 8 channels (0–7)
+
+  Wire.beginTransmission(TCAADDR);
+  Wire.write(1 << i);                 // Select channel `i`
+  Wire.endTransmission();
+}
